@@ -7,10 +7,11 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, Depends, Body, Security
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials  # noqa: F401 - imported for backwards compat
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.status import HTTP_422_UNPROCESSABLE_ENTITY
@@ -20,6 +21,12 @@ from .models.schemas import (
     AnalyzeResponse,
     IssueSummary,
     HealthResponse,
+    UserRegister,
+    UserLogin,
+    TokenResponse,
+    TeamCreate,
+    TeamInvite,
+    TeamResponse,
 )
 from .analyzers.static_analyzer import LogicAnalyzer
 from .analyzers.security_analyzer import SecurityAnalyzer
@@ -28,6 +35,7 @@ from .rules.rule_engine import rule_engine
 from .storage import session_store
 from .report import generate_html_report, generate_text_summary
 from .webhook import webhook_handler
+from . import auth
 
 # Configure logging
 logging.basicConfig(
@@ -43,6 +51,8 @@ WEBHOOK_SECRET = os.getenv("CODELENS_WEBHOOK_SECRET")
 logic_analyzer = LogicAnalyzer(rule_engine)
 security_analyzer = SecurityAnalyzer(rule_engine)
 debt_analyzer = DebtAnalyzer(rule_engine)
+
+# Security scheme (now using auth.security internally)
 
 
 # ───────────────────────────────────────────────────────────────
@@ -77,9 +87,10 @@ def build_error_response(status_code: int, message: str, detail: Optional[str] =
 app = FastAPI(
     title="CodeLens AI",
     description="AI代码审查SaaS - 专注AI生成代码的质量保障",
-    version="0.3.0",
+    version="0.4.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    openapi_url="/openapi.json",
 )
 
 # CORS
@@ -136,7 +147,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 @app.on_event("startup")
 async def startup():
-    logger.info("CodeLens AI Backend v0.3.0 starting...")
+    logger.info("CodeLens AI Backend v0.4.0 starting...")
 
 
 @app.on_event("shutdown")
@@ -144,16 +155,30 @@ async def shutdown():
     logger.info("CodeLens AI Backend shutting down...")
 
 
+# ─── Auth Dependencies ────────────────────────────────────────
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(auth.security),
+) -> dict:
+    """Get current authenticated user"""
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return await auth.get_current_user(credentials)
+
+
 # ─── Core Endpoints ───────────────────────────────────────────
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
     """Health check endpoint"""
-    return HealthResponse(status="ok")
+    return HealthResponse(status="ok", version="v0.4.0")
 
 
 @app.post("/api/v1/analyze", response_model=AnalyzeResponse)
-async def analyze(req: AnalyzeRequest):
+async def analyze(
+    req: AnalyzeRequest = Body(...),
+    user: Optional[dict] = Security(auth.get_optional_user),
+):
     """
     Analyze code snippet
 
@@ -171,7 +196,7 @@ async def analyze(req: AnalyzeRequest):
     if len(req.code) > 100_000:
         raise APIError(400, "代码超过100KB限制", f"code length: {len(req.code)}")
 
-    logger.info(f"Analyze request: lang={req.language}, len={len(req.code)}")
+    logger.info(f"Analyze request: lang={req.language}, len={len(req.code)}, user={user}")
 
     issues = []
 
@@ -225,6 +250,116 @@ async def analyze(req: AnalyzeRequest):
     )
 
     return response
+
+
+# ─── Auth Endpoints ───────────────────────────────────────────
+
+@app.post("/api/v1/auth/register", response_model=TokenResponse, tags=["认证"])
+async def register(req: UserRegister):
+    """
+    Register a new user account.
+    
+    Returns JWT token for immediate authentication.
+    """
+    user = auth.register_user(req.email, req.password, req.name)
+    token_data = auth.login_user(req.email, req.password)
+    return TokenResponse(**token_data)
+
+
+@app.post("/api/v1/auth/login", response_model=TokenResponse, tags=["认证"])
+async def login(req: UserLogin):
+    """
+    Authenticate user and return JWT token.
+    
+    Token expires in 7 days.
+    """
+    return auth.login_user(req.email, req.password)
+
+
+@app.get("/api/v1/auth/me", tags=["认证"])
+async def get_me(user: dict = Depends(get_current_user)):
+    """
+    Get current user profile.
+    
+    Requires authentication.
+    """
+    return user
+
+
+# ─── Team Endpoints ───────────────────────────────────────────
+
+@app.post("/api/v1/teams", response_model=TeamResponse, tags=["团队"])
+async def create_team(
+    req: TeamCreate,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Create a new team.
+    
+    The creating user becomes the team owner.
+    Requires authentication.
+    """
+    team = auth.create_team(req.name, user["id"])
+    # Get full team with members
+    return auth.get_team(team["id"], user["id"])
+
+
+@app.get("/api/v1/teams", tags=["团队"])
+async def list_teams(user: dict = Depends(get_current_user)):
+    """
+    List all teams the current user belongs to.
+    
+    Requires authentication.
+    """
+    teams = auth.get_user_teams(user["id"])
+    return {"teams": teams, "count": len(teams)}
+
+
+@app.get("/api/v1/teams/{team_id}", response_model=TeamResponse, tags=["团队"])
+async def get_team(
+    team_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Get team details.
+    
+    Only team members can view team details.
+    Requires authentication.
+    """
+    return auth.get_team(team_id, user["id"])
+
+
+@app.post("/api/v1/teams/{team_id}/invite", tags=["团队"])
+async def invite_member(
+    team_id: int,
+    req: TeamInvite,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Invite a user to join the team.
+    
+    Only owner or admin can invite members.
+    Requires authentication.
+    """
+    result = auth.invite_to_team(team_id, user["id"], req.email, req.role)
+    return {"message": "Invitation sent", **result}
+
+
+@app.delete("/api/v1/teams/{team_id}/members/{user_id}", tags=["团队"])
+async def remove_member(
+    team_id: int,
+    user_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Remove a member from the team.
+    
+    Only owner or admin can remove members.
+    Cannot remove the team owner.
+    Requires authentication.
+    """
+    success = auth.remove_from_team(team_id, user["id"], user_id)
+    return {"deleted": success, "user_id": user_id}
 
 
 # ─── Report Endpoints ─────────────────────────────────────────
@@ -402,6 +537,17 @@ async def review_pr(request: Request):
         "report_url": f"/api/v1/report/{session_id}",
         **response.model_dump(),
     }
+
+
+# ─── OpenAPI Tags ─────────────────────────────────────────────
+
+app.openapi_tags = [
+    {"name": "认证", "description": "用户注册、登录、Token管理"},
+    {"name": "团队", "description": "团队创建、成员管理、权限控制"},
+    {"name": "分析", "description": "代码分析相关端点"},
+    {"name": "报告", "description": "报告生成和获取"},
+    {"name": "Webhook", "description": "CI/CD集成"},
+]
 
 
 if __name__ == "__main__":
