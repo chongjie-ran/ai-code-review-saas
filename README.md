@@ -12,17 +12,28 @@
 
 ## 快速开始
 
-### 后端
+### Docker Compose (推荐)
 
 ```bash
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8090
+git clone https://github.com/chongjie-ran/ai-code-review-saas.git
+cd ai-code-review-saas
+cp .env.example .env
+# Edit .env and set JWT_SECRET
+docker-compose up -d
 ```
 
-### 前端
+访问 http://localhost:3000
+
+### 手动运行
 
 ```bash
+# Backend
+cd backend
+pip install -r requirements.txt
+export JWT_SECRET="your-secret-key"
+python -m uvicorn app.main:app --reload --port 8090
+
+# Frontend
 cd frontend
 npm install
 npm run dev
@@ -38,77 +49,53 @@ npm run dev
 curl -X POST http://localhost:8090/api/v1/analyze \
   -H "Content-Type: application/json" \
   -d '{
-    "code": "password = \"secret123\"",
-    "language": "python",
-    "options": {"check_security": true, "check_logic": true, "check_debt": true}
+    "code": "result = data.get(\"key\", None)\nif result: print(result.title())",
+    "language": "python"
   }'
 ```
 
-### 健康检查
+### 认证
 
 ```bash
-curl http://localhost:8090/health
-```
+# 注册
+curl -X POST http://localhost:8090/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"password123","name":"Test User"}'
 
-## CI/CD集成
-
-### GitHub Actions
-
-```yaml
-- name: CodeLens AI Scan
-  uses: codelens-ai/action@v0.1
-  with:
-    api_key: ${{ secrets.CODELENS_API_KEY }}
-    languages: python,javascript
+# 登录
+curl -X POST http://localhost:8090/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"password123"}'
 ```
 
 ## 技术栈
 
-- **后端**: FastAPI + Python
-- **前端**: React + Vite
-- **规则引擎**: 100+ AI代码专项规则
-
-## 路线图
-
-- [ ] 支持更多语言 (Rust, C++)
-- [ ] GitHub/GitLab 插件市场
-- [ ] 团队协作功能
-- [ ] 企业版SSO
-
----
-
-*悟空开发 | 2026-04-17*
-
----
-
-## 🚀 MVP发布公告
-
-**CodeLens AI** MVP版本正式发布！
-
-🎯 **体验地址**: 本地运行（见上方快速开始）
-
-📦 **代码仓库**: https://github.com/chongjie-ran/ai-code-review-saas
-
-### 为什么选择CodeLens AI？
-
-| 传统代码审查 | CodeLens AI |
-|------------|-------------|
-| 通用漏洞检测 | 🤖 **专注AI生成代码** |
-| 人工配置规则 | 📊 **100+ AI代码专项规则** |
-| 被动发现问题 | ⚡ **CI/CD实时反馈** |
-
-### 技术栈
-
 - **后端**: FastAPI + Python静态分析引擎
 - **前端**: React + TypeScript
 - **规则库**: 100+ AI代码专项规则
-- **部署**: 支持Docker/Render/Railway
+- **部署**: Docker Compose / Render / Railway
 
-### 支持的语言
+## 支持的语言
 
 Python, JavaScript, TypeScript, Java, Go, Rust
 
-### 许可
+## 🚀 Enterprise v1.0.0 新功能
+
+| 功能 | 描述 |
+|------|------|
+| **SSO / SAML** | 企业级SAML 2.0单点登录 |
+| **OIDC** | OpenID Connect协议支持 |
+| **审计日志** | 完整API操作记录，可导出 |
+| **SOC2报告** | SOC2 Type II合规报告 |
+| **ISO27001报告** | ISO27001:2022合规报告 |
+| **HIPAA报告** | HIPAA安全规则合规报告 |
+| **Rate Limiting** | Token Bucket智能限流 |
+| **AES-256加密** | 敏感数据静态加密 |
+| **Docker Compose** | 一键私有部署 |
+
+详细部署文档: [docs/DEPLOY.md](docs/DEPLOY.md)
+
+## 许可
 
 MIT License
 

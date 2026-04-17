@@ -1,0 +1,93 @@
+version: "3.9"
+
+services:
+  # ─── CodeLens AI Backend ────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: codelens-backend
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8090}:8090"
+    environment:
+      - CODELENS_JWT_SECRET=${JWT_SECRET:?JWT_SECRET required}
+      - CODELENS_WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - CODELENS_RATE_LIMIT=${RATE_LIMIT:-100}
+      - CODELENS_RATE_WINDOW=${RATE_WINDOW:-60}
+      - CODELENS_AUDIT_RETENTION_DAYS=${AUDIT_RETENTION_DAYS:-90}
+      - CODELENS_ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+      # SSO Configuration (SAML)
+      - CODELENS_SAML_ENTITY_IDS=${CODELENS_SAML_ENTITY_IDS:-}
+      - CODELENS_SAML_1_SSO_URL=${CODELENS_SAML_1_SSO_URL:-}
+      - CODELENS_SAML_1_X509_CERT=${CODELENS_SAML_1_X509_CERT:-}
+      - CODELENS_SAML_1_LABEL=${CODELENS_SAML_1_LABEL:-Enterprise SSO}
+      # SSO Configuration (OIDC)
+      - CODELENS_OIDC_ISSUERS=${CODELENS_OIDC_ISSUERS:-}
+      - CODELENS_OIDC_1_CLIENT_ID=${CODELENS_OIDC_1_CLIENT_ID:-}
+      - CODELENS_OIDC_1_CLIENT_SECRET=${CODELENS_OIDC_1_CLIENT_SECRET:-}
+      - CODELENS_OIDC_1_AUTH_ENDPOINT=${CODELENS_OIDC_1_AUTH_ENDPOINT:-}
+      - CODELENS_OIDC_1_TOKEN_ENDPOINT=${CODELENS_OIDC_1_TOKEN_ENDPOINT:-}
+      - CODELENS_OIDC_1_USERINFO_ENDPOINT=${CODELENS_OIDC_1_USERINFO_ENDPOINT:-}
+    volumes:
+      - ./backend/codelens.db:/app/codelens.db
+      - ./backend/codelens_audit.db:/app/codelens_audit.db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - codelens-net
+
+  # ─── CodeLens AI Frontend ────────────────────────────────────
+  frontend:
+    image: nginx:alpine
+    container_name: codelens-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+    networks:
+      - codelens-net
+
+  # ─── Optional: Redis for session caching (enterprise) ────────
+  redis:
+    image: redis:7-alpine
+    container_name: codelens-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - codelens-net
+
+  # ─── Optional: Prometheus metrics (enterprise) ───────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: codelens-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - codelens-net
+
+networks:
+  codelens-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+  prometheus-data:

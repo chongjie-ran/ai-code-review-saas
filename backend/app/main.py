@@ -5,9 +5,9 @@ AI代码审查SaaS后端服务
 import logging
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Literal
 
-from fastapi import FastAPI, HTTPException, Request, Response, Depends, Body, Security
+from fastapi import FastAPI, HTTPException, Request, Response, Depends, Body, Security, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -28,6 +28,9 @@ from .models.schemas import (
     TeamInvite,
     TeamResponse,
 )
+
+# Enterprise imports
+from . import audit, sso, compliance, rate_limiter, encryption
 from .analyzers.static_analyzer import LogicAnalyzer
 from .analyzers.security_analyzer import SecurityAnalyzer
 from .analyzers.debt_analyzer import DebtAnalyzer
@@ -87,7 +90,7 @@ def build_error_response(status_code: int, message: str, detail: Optional[str] =
 app = FastAPI(
     title="CodeLens AI",
     description="AI代码审查SaaS - 专注AI生成代码的质量保障",
-    version="0.4.0",
+    version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -101,6 +104,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Rate limiting middleware
+app.add_middleware(rate_limiter.RateLimitMiddleware)
+
+# Audit middleware (auto-logs all API requests)
+app.add_middleware(audit.AuditMiddleware)
 
 
 # ─── Exception handlers ───────────────────────────────────────
@@ -171,7 +180,7 @@ async def get_current_user(
 @app.get("/health", response_model=HealthResponse)
 async def health():
     """Health check endpoint"""
-    return HealthResponse(status="ok", version="v0.4.0")
+    return HealthResponse(status="ok", version="v1.0.0")
 
 
 @app.post("/api/v1/analyze", response_model=AnalyzeResponse)
@@ -553,3 +562,337 @@ app.openapi_tags = [
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8090)
+
+
+# ─── SSO / Enterprise Auth Endpoints ───────────────────────────────────────
+
+@app.get("/api/v1/auth/sso/providers", tags=["SSO"])
+async def list_sso_providers():
+    """
+    List all configured SSO providers (SAML and OIDC).
+    Returns provider IDs for initiating SSO login.
+    """
+    providers = sso.sso_registry.list_providers()
+    return {"providers": providers, "count": len(providers)}
+
+
+@app.get("/api/v1/auth/saml/login", tags=["SSO"])
+async def saml_login(
+    provider_id: str = Query(..., description="SAML provider ID from /providers list"),
+    redirect_uri: str = Query(..., description="URL to redirect after SAML callback"),
+):
+    """
+    Initiate SAML SSO login flow.
+    Returns redirect URL to the configured SAML Identity Provider.
+    """
+    result = sso.sso_registry.get_saml_login_url(provider_id, redirect_uri)
+    return {
+        "type": "saml",
+        "redirect_url": result["redirect_url"],
+        "request_id": result["request_id"],
+        "provider_label": result["provider_label"],
+    }
+
+
+@app.post("/api/v1/auth/saml/callback", response_model=TokenResponse, tags=["SSO"])
+async def saml_callback(
+    SAMLResponse: str = Body(..., embed=True),
+    RelayState: Optional[str] = Body(None, embed=True),
+):
+    """
+    Handle SAML Response from Identity Provider.
+    Automatically provisions or retrieves user and returns JWT token.
+    """
+    if not SAMLResponse:
+        raise APIError(400, "Missing SAMLResponse")
+
+    user_info = sso.sso_registry.handle_saml_response(SAMLResponse, RelayState or "")
+    result = sso.provision_sso_user(
+        provider="saml",
+        email=user_info["email"],
+        name=user_info.get("name"),
+        external_id=user_info.get("external_id"),
+    )
+    return TokenResponse(**result)
+
+
+@app.get("/api/v1/auth/oidc/login", tags=["SSO"])
+async def oidc_login(
+    provider_id: str = Query(..., description="OIDC provider ID from /providers list"),
+    redirect_uri: str = Query(..., description="OAuth redirect URI"),
+):
+    """
+    Initiate OIDC authorization code flow.
+    Returns redirect URL to the configured OIDC provider.
+    """
+    result = sso.sso_registry.get_oidc_login_url(provider_id, redirect_uri)
+    return {
+        "type": "oidc",
+        "redirect_url": result["redirect_url"],
+        "state": result["state"],
+        "provider_label": result["provider_label"],
+    }
+
+
+@app.post("/api/v1/auth/oidc/callback", response_model=TokenResponse, tags=["SSO"])
+async def oidc_callback(
+    code: str = Body(..., embed=True),
+    state: str = Body(..., embed=True),
+    redirect_uri: str = Body(..., embed=True),
+    provider_id: str = Body(..., embed=True),
+):
+    """
+    Exchange OIDC authorization code for tokens.
+    Automatically provisions or retrieves user and returns JWT token.
+    """
+    user_info = await sso.sso_registry.exchange_oidc_code(provider_id, code, state, redirect_uri)
+    result = sso.provision_sso_user(
+        provider="oidc",
+        email=user_info["email"],
+        name=user_info.get("name"),
+        external_id=user_info.get("sub"),
+    )
+    return TokenResponse(**result)
+
+
+# ─── Audit Log Endpoints ────────────────────────────────────────────────
+
+@app.get("/api/v1/audit/logs", tags=["审计"])
+async def get_audit_logs(
+    user: dict = Depends(get_current_user),
+    action: Optional[str] = Query(None, description="Filter by action type"),
+    resource: Optional[str] = Query(None, description="Filter by resource type"),
+    team_id: Optional[int] = Query(None, description="Filter by team"),
+    start_date: Optional[str] = Query(None, description="ISO date start"),
+    end_date: Optional[str] = Query(None, description="ISO date end"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Query audit logs with filters.
+    Only accessible by authenticated users. Team admins can view team-scoped logs.
+    Requires authentication.
+    """
+    if team_id:
+        try:
+            auth.get_team(team_id, user["id"])
+        except HTTPException:
+            raise APIError(403, "Not authorized to view this team's audit logs")
+
+    result = audit.query_audit_logs(
+        user_id=user["id"],
+        team_id=team_id,
+        action=action,
+        resource=resource,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        offset=offset,
+    )
+    return result
+
+
+@app.get("/api/v1/audit/logs/export", tags=["审计"])
+async def export_audit_logs(
+    user: dict = Depends(get_current_user),
+    format: Literal["json", "csv"] = Query("json", description="Export format"),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+):
+    """
+    Export audit logs as JSON or CSV.
+    Requires authentication.
+    """
+    content = audit.export_audit_logs(
+        start_date=start_date,
+        end_date=end_date,
+        format=format,
+    )
+    filename = f"audit_logs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.{format}"
+    media_type = "application/json" if format == "json" else "text/csv"
+    return Response(
+        content=content,
+        media_type=f"{media_type}; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# ─── Compliance Report Endpoints ──────────────────────────────────────────
+
+@app.get("/api/v1/compliance/soc2", tags=["合规"])
+async def get_soc2_report(
+    user: dict = Depends(get_current_user),
+    team_id: Optional[int] = Query(None),
+):
+    """Generate SOC2 Type II compliance report. Requires authentication."""
+    team_name = "CodeLens AI Team"
+    if team_id:
+        try:
+            team = auth.get_team(team_id, user["id"])
+            team_name = team["name"]
+        except HTTPException:
+            raise APIError(403, "Not authorized")
+    report = compliance.generate_soc2_report(None, team_name)
+    return report
+
+
+@app.get("/api/v1/compliance/soc2/html", tags=["合规"])
+async def get_soc2_report_html(
+    user: dict = Depends(get_current_user),
+    team_id: Optional[int] = Query(None),
+):
+    """Generate SOC2 compliance report as HTML. Requires authentication."""
+    team_name = "CodeLens AI Team"
+    if team_id:
+        try:
+            team = auth.get_team(team_id, user["id"])
+            team_name = team["name"]
+        except HTTPException:
+            raise APIError(403, "Not authorized")
+    report = compliance.generate_soc2_report(None, team_name)
+    html = compliance.generate_compliance_html_report(report, "soc2")
+    return HTMLResponse(content=html)
+
+
+@app.get("/api/v1/compliance/iso27001", tags=["合规"])
+async def get_iso27001_report(
+    user: dict = Depends(get_current_user),
+    team_id: Optional[int] = Query(None),
+):
+    """Generate ISO 27001:2022 compliance report. Requires authentication."""
+    team_name = "CodeLens AI Team"
+    if team_id:
+        try:
+            team = auth.get_team(team_id, user["id"])
+            team_name = team["name"]
+        except HTTPException:
+            raise APIError(403, "Not authorized")
+    report = compliance.generate_iso27001_report(None, team_name)
+    return report
+
+
+@app.get("/api/v1/compliance/iso27001/html", tags=["合规"])
+async def get_iso27001_report_html(
+    user: dict = Depends(get_current_user),
+    team_id: Optional[int] = Query(None),
+):
+    """Generate ISO 27001 compliance report as HTML. Requires authentication."""
+    team_name = "CodeLens AI Team"
+    if team_id:
+        try:
+            team = auth.get_team(team_id, user["id"])
+            team_name = team["name"]
+        except HTTPException:
+            raise APIError(403, "Not authorized")
+    report = compliance.generate_iso27001_report(None, team_name)
+    html = compliance.generate_compliance_html_report(report, "iso27001")
+    return HTMLResponse(content=html)
+
+
+@app.get("/api/v1/compliance/hipaa", tags=["合规"])
+async def get_hipaa_report(
+    user: dict = Depends(get_current_user),
+    team_id: Optional[int] = Query(None),
+):
+    """Generate HIPAA Security Rule compliance report. Requires authentication."""
+    team_name = "CodeLens AI Team"
+    if team_id:
+        try:
+            team = auth.get_team(team_id, user["id"])
+            team_name = team["name"]
+        except HTTPException:
+            raise APIError(403, "Not authorized")
+    report = compliance.generate_hipaa_report(None, team_name)
+    return report
+
+
+@app.get("/api/v1/compliance/hipaa/html", tags=["合规"])
+async def get_hipaa_report_html(
+    user: dict = Depends(get_current_user),
+    team_id: Optional[int] = Query(None),
+):
+    """Generate HIPAA compliance report as HTML. Requires authentication."""
+    team_name = "CodeLens AI Team"
+    if team_id:
+        try:
+            team = auth.get_team(team_id, user["id"])
+            team_name = team["name"]
+        except HTTPException:
+            raise APIError(403, "Not authorized")
+    report = compliance.generate_hipaa_report(None, team_name)
+    html = compliance.generate_compliance_html_report(report, "hipaa")
+    return HTMLResponse(content=html)
+
+
+# ─── Encryption Utilities ────────────────────────────────────────────────
+
+@app.post("/api/v1/enterprise/encrypt", tags=["企业"])
+async def encrypt_data(
+    plaintext: str = Body(..., description="Data to encrypt"),
+    user: dict = Depends(get_current_user),
+):
+    """
+    Encrypt sensitive data using AES-256-GCM.
+    Enterprise feature for protecting secrets at rest.
+    Requires authentication.
+    """
+    encrypted = encryption.encrypt(plaintext)
+    return {"encrypted": encrypted, "algorithm": "AES-256-GCM"}
+
+
+@app.post("/api/v1/enterprise/decrypt", tags=["企业"])
+async def decrypt_data(
+    encrypted: str = Body(..., description="Encrypted data"),
+    user: dict = Depends(get_current_user),
+):
+    """Decrypt AES-256-GCM encrypted data. Requires authentication."""
+    try:
+        plaintext = encryption.decrypt(encrypted)
+        return {"plaintext": plaintext}
+    except ValueError as e:
+        raise APIError(400, "Decryption failed", str(e))
+
+
+@app.get("/api/v1/enterprise/status", tags=["企业"])
+async def enterprise_status(user: dict = Depends(get_current_user)):
+    """
+    Get enterprise feature status for the current deployment.
+    Shows which enterprise features are enabled.
+    Requires authentication.
+    """
+    saml_configs, oidc_configs = sso.load_idp_configs()
+    return {
+        "version": "v1.0.0",
+        "enterprise": True,
+        "features": {
+            "sso": {
+                "enabled": len(saml_configs) + len(oidc_configs) > 0,
+                "saml_providers": len(saml_configs),
+                "oidc_providers": len(oidc_configs),
+            },
+            "audit_logs": {"enabled": True, "retention_days": audit.AUDIT_RETENTION_DAYS},
+            "compliance": {"soc2": True, "iso27001": True, "hipaa": True},
+            "rate_limiting": {
+                "enabled": True,
+                "default_limit": rate_limiter.DEFAULT_LIMIT,
+                "default_window": rate_limiter.DEFAULT_WINDOW,
+            },
+            "encryption": {"algorithm": "AES-256-GCM", "enabled": True},
+            "docker_compose": {"available": True},
+        },
+    }
+
+
+# ─── OpenAPI Tags Update ──────────────────────────────────────────────────
+
+app.openapi_tags = [
+    {"name": "认证", "description": "用户注册、登录、Token管理"},
+    {"name": "SSO", "description": "企业SSO登录 (SAML 2.0 / OIDC)"},
+    {"name": "团队", "description": "团队创建、成员管理、权限控制"},
+    {"name": "审计", "description": "审计日志查询和导出"},
+    {"name": "合规", "description": "SOC2 / ISO27001 / HIPAA 合规报告"},
+    {"name": "企业", "description": "企业级功能 (加密、状态)"},
+    {"name": "分析", "description": "代码分析相关端点"},
+    {"name": "报告", "description": "报告生成和获取"},
+    {"name": "Webhook", "description": "CI/CD集成"},
+]
