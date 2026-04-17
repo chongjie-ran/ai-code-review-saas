@@ -78,3 +78,40 @@ curl http://localhost:8090/health
 ---
 
 *悟空开发 | 2026-04-17*
+
+---
+
+## 🚀 MVP发布公告
+
+**CodeLens AI** MVP版本正式发布！
+
+🎯 **体验地址**: 本地运行（见上方快速开始）
+
+📦 **代码仓库**: https://github.com/chongjie-ran/ai-code-review-saas
+
+### 为什么选择CodeLens AI？
+
+| 传统代码审查 | CodeLens AI |
+|------------|-------------|
+| 通用漏洞检测 | 🤖 **专注AI生成代码** |
+| 人工配置规则 | 📊 **100+ AI代码专项规则** |
+| 被动发现问题 | ⚡ **CI/CD实时反馈** |
+
+### 技术栈
+
+- **后端**: FastAPI + Python静态分析引擎
+- **前端**: React + TypeScript
+- **规则库**: 100+ AI代码专项规则
+- **部署**: 支持Docker/Render/Railway
+
+### 支持的语言
+
+Python, JavaScript, TypeScript, Java, Go, Rust
+
+### 许可
+
+MIT License
+
+---
+
+*CodeLens AI - 让AI代码从风险到可信*
