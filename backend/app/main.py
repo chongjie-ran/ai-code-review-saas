@@ -271,8 +271,8 @@ async def register(req: UserRegister):
     
     Returns JWT token for immediate authentication.
     """
-    user = auth.register_user(req.email, req.password, req.name)
-    token_data = auth.login_user(req.email, req.password)
+    user = await auth.register_user(req.email, req.password, req.name)
+    token_data = await auth.login_user(req.email, req.password)
     return TokenResponse(**token_data)
 
 
@@ -283,7 +283,7 @@ async def login(req: UserLogin):
     
     Token expires in 7 days.
     """
-    return auth.login_user(req.email, req.password)
+    return await auth.login_user(req.email, req.password)
 
 
 @app.get("/api/v1/auth/me", tags=["认证"])
