@@ -96,10 +96,11 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-# CORS
+# TD-02: CORS - whitelist origins from environment variable (no wildcard in production)
+ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "https://app.example.com").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
