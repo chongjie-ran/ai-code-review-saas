@@ -1,0 +1,75 @@
+name: 💬 User Feedback
+description: Share your experience, suggestions, or issues with CodeLens AI
+title: "[Feedback] "
+labels: ["kind/feedback"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        👋 感谢你使用 CodeLens AI！你的反馈对我们非常重要。
+        
+        请花2分钟填写以下内容，帮助我们改进产品。
+
+  - type: dropdown
+    id: feedback-type
+    attributes:
+      label: 反馈类型
+      description: 你想反馈什么类型的问题？
+      options:
+        - 🐛 Bug 报告 - 发现了一个问题
+        - 💡 功能建议 - 想要一个新功能
+        - 👍 好评 - 产品很好用！
+        - ❓ 使用咨询 - 有使用上的疑问
+        - 🔒 安全问题 - 发现安全漏洞
+    validations:
+      required: true
+
+  - type: textarea
+    id: experience
+    attributes:
+      label: 你的使用体验如何？
+      description: 描述你使用 CodeLens AI 的场景和感受
+      placeholder: |
+        例如：我在一个5人Python团队中使用，主要用它来审查AI生成的代码...
+    validations:
+      required: true
+
+  - type: textarea
+    id: features-needed
+    attributes:
+      label: 哪些功能对你最有价值？（可选）
+      description: 如果你用过，请告诉我们哪些功能最实用
+      placeholder: |
+        例如：逻辑错误检测、安全漏洞扫描、技术债务量化...
+
+  - type: textarea
+    id: improvements
+    attributes:
+      label: 希望改进的地方？（可选）
+      description: 你希望我们在哪些方面做得更好
+      placeholder: |
+        例如：希望增加对更多语言的支持，希望有Slack集成...
+
+  - type: textarea
+    id: comparison
+    attributes:
+      label: 你之前用什么工具？（可选）
+      description: 和其他工具相比，CodeLens AI 有哪些优势或不足？
+      placeholder: |
+        例如：之前用 SonarQube，CodeLens AI 的AI代码检测更精准...
+
+  - type: input
+    id: team-size
+    attributes:
+      label: 团队规模（可选）
+      description: 你所在的团队有多少人？
+      placeholder: "例如：个人开发者 / 2-10人 / 11-50人 / 50人以上"
+
+  - type: checkboxes
+    id: contact-permission
+    attributes:
+      label: 联系我们
+      options:
+        - label: 我愿意被邀请加入 CodeLens AI 早期用户群
+          description: 我们会通过 GitHub 与你联系
