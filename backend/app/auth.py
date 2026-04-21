@@ -4,7 +4,6 @@ JWT-based user authentication
 """
 import os
 import sqlite3
-import hashlib
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
@@ -13,12 +12,20 @@ from fastapi import HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
+from passlib.context import CryptContext
 
 # ─── Configuration ───────────────────────────────────────────────
 
-JWT_SECRET = os.getenv("CODELENS_JWT_SECRET", secrets.token_hex(32))
+# TD-03: JWT_SECRET must be set - no fallback to random value
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise ValueError("JWT_SECRET environment variable must be set")
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24 * 7  # 7 days
+
+# TD-01: Password hashing with bcrypt (replaces insecure SHA256)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # ─── Database Setup ──────────────────────────────────────────────
 
@@ -122,12 +129,12 @@ class TeamResponse(BaseModel):
 # ─── Password Utilities ─────────────────────────────────────────
 
 def hash_password(password: str) -> str:
-    """Hash password using SHA256 (simple implementation)"""
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Hash password using bcrypt"""
+    return pwd_context.hash(password)
 
 def verify_password(password: str, hashed: str) -> bool:
-    """Verify password against hash"""
-    return hash_password(password) == hashed
+    """Verify password against bcrypt hash"""
+    return pwd_context.verify(password, hashed)
 
 # ─── JWT Utilities ──────────────────────────────────────────────
 
