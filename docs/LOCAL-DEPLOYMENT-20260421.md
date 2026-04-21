@@ -159,6 +159,25 @@ docker-compose down
 | docker-compose缺少CORS_ORIGINS | 中 | ✅ 已修复并推送 |
 | docker-compose缺少ANONYMOUS_LIMIT | 低 | ✅ 已修复并推送 |
 
+### 6.1 新发现：AuditMiddleware 请求体Bug
+
+| 项目 | 内容 |
+|------|------|
+| **问题** | AuditMiddleware 读取 POST 请求体后未放回流中，导致 handler 无法读取，请求永久挂起 |
+| **根因** | `_get_body()` 消费了 receive stream 但没有 replay 函数 |
+| **影响** | 所有 POST/PUT/PATCH 请求（注册、登录、分析等）超时 |
+| **修复** | `_get_body()` 返回 `(body_str, receive_replay)`，中间件使用 replay 函数代替原始 receive |
+| **Commit** | `3fb2e465` |
+
+### 6.2 新发现：bcrypt 阻塞事件循环
+
+| 项目 | 内容 |
+|------|------|
+| **问题** | bcrypt 是 CPU 密集型操作，单线程 uvicorn 被阻塞 |
+| **修复** | 使用 `concurrent.futures.ThreadPoolExecutor` 执行 bcrypt，async 函数通过 `run_in_executor` 调用 |
+| **Commit** | `f0004822` |
+| **注意** | bcrypt 实际只需 0.2 秒，修复后不影响用户体验 |
+
 ---
 
 ## 7. 下一步
