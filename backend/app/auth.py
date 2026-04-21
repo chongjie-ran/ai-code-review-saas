@@ -4,7 +4,6 @@ JWT-based user authentication
 """
 import os
 import sqlite3
-import hashlib
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
@@ -13,12 +12,20 @@ from fastapi import HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
+from passlib.context import CryptContext
 
 # ─── Configuration ───────────────────────────────────────────────
 
-JWT_SECRET = os.getenv("CODELENS_JWT_SECRET", secrets.token_hex(32))
+# TD-03: JWT_SECRET must be set - no fallback to random value
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise ValueError("JWT_SECRET environment variable must be set")
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24 * 7  # 7 days
+
+# TD-01: Password hashing with bcrypt (replaces insecure SHA256)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # ─── Database Setup ──────────────────────────────────────────────
 
@@ -121,13 +128,20 @@ class TeamResponse(BaseModel):
 
 # ─── Password Utilities ─────────────────────────────────────────
 
-def hash_password(password: str) -> str:
-    """Hash password using SHA256 (simple implementation)"""
-    return hashlib.sha256(password.encode()).hexdigest()
+import concurrent.futures
 
-def verify_password(password: str, hashed: str) -> bool:
-    """Verify password against hash"""
-    return hash_password(password) == hashed
+# Thread pool for CPU-blocking bcrypt operations
+_bcrypt_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="bcrypt")
+
+async def hash_password(password: str) -> str:
+    """Hash password using bcrypt (runs in thread pool to avoid blocking)"""
+    loop = __import__('asyncio').get_event_loop()
+    return await loop.run_in_executor(_bcrypt_pool, pwd_context.hash, password)
+
+async def verify_password(password: str, hashed: str) -> bool:
+    """Verify password against bcrypt hash (runs in thread pool to avoid blocking)"""
+    loop = __import__('asyncio').get_event_loop()
+    return await loop.run_in_executor(_bcrypt_pool, pwd_context.verify, password, hashed)
 
 # ─── JWT Utilities ──────────────────────────────────────────────
 
@@ -199,7 +213,7 @@ async def get_optional_user(credentials: Optional[HTTPAuthorizationCredentials] 
 
 # ─── Auth Endpoints ─────────────────────────────────────────────
 
-def register_user(email: str, password: str, name: Optional[str] = None) -> dict:
+async def register_user(email: str, password: str, name: Optional[str] = None) -> dict:
     """Register a new user"""
     # Validate email format
     if "@" not in email or "." not in email:
@@ -220,7 +234,7 @@ def register_user(email: str, password: str, name: Optional[str] = None) -> dict
     
     # Create user
     now = datetime.utcnow().isoformat()
-    password_hash = hash_password(password)
+    password_hash = await hash_password(password)
     
     cursor.execute(
         "INSERT INTO users (email, password_hash, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -238,7 +252,7 @@ def register_user(email: str, password: str, name: Optional[str] = None) -> dict
         "created_at": now,
     }
 
-def login_user(email: str, password: str) -> dict:
+async def login_user(email: str, password: str) -> dict:
     """Authenticate user and return token"""
     conn = get_db()
     cursor = conn.cursor()
@@ -250,7 +264,7 @@ def login_user(email: str, password: str) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
-    if not verify_password(password, user["password_hash"]):
+    if not await verify_password(password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
     token = create_access_token(user["id"], user["email"])

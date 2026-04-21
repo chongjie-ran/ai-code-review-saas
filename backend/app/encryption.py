@@ -22,7 +22,7 @@ def _get_encryption_key() -> bytes:
         return hashlib.sha256(key).digest()
 
     # Use secret if provided, otherwise derive from JWT_SECRET
-    secret = os.getenv("CODELENS_JWT_SECRET", "default-dev-key")
+    secret = os.getenv("JWT_SECRET", "default-dev-key")
     return hashlib.sha256(secret.encode()).digest()
 
 
