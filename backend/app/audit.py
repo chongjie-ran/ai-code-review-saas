@@ -334,11 +334,13 @@ class AuditMiddleware:
             except Exception:
                 pass
 
-        # Read request body
+        # Read request body and get replay function
         request_body = None
+        receive_func = receive
         if scope.get("method") in ("POST", "PUT", "PATCH"):
-            body = await self._get_body(receive)
-            request_body = body
+            body_str, receive_replay = await self._get_body(receive)
+            request_body = body_str
+            receive_func = receive_replay
 
         # Process request
         status_code = 500
@@ -348,7 +350,7 @@ class AuditMiddleware:
                 status_code = message["status"]
             await send(message)
 
-        await self.app(scope, receive, send_wrapper)
+        await self.app(scope, receive_func, send_wrapper)
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -370,8 +372,11 @@ class AuditMiddleware:
             duration_ms=duration_ms,
         )
 
-    async def _get_body(self, receive) -> Optional[str]:
-        """Read request body"""
+    async def _get_body(self, receive) -> tuple[Optional[str], callable]:
+        """
+        Read request body and return (body_str, receive_function).
+        The receive_function can be called again to replay the body.
+        """
         body = b""
         while True:
             message = await receive()
@@ -379,10 +384,18 @@ class AuditMiddleware:
                 body += message.get("body", b"")
             if not message.get("more_body"):
                 break
+        
+        body_str = None
         try:
-            return body.decode("utf-8", errors="replace")
+            body_str = body.decode("utf-8", errors="replace")
         except Exception:
-            return None
+            pass
+        
+        # Return a receive function that replays the stored body
+        async def receive_replay():
+            return {"type": "http.request", "body": body, "more_body": False}
+        
+        return body_str, receive_replay
 
 
 def _parse_path_for_audit(path: str) -> tuple:
