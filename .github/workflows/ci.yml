@@ -1,29 +1,47 @@
-name: CodeLens AI Code Review
+name: CodeLens AI Code Review - CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
-  codelens-scan:
+  backend-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run CodeLens AI Scan
-        run: |
-          # 分析所有代码
-          echo "Running CodeLens AI scan on modified files..."
-
-      - name: Comment PR
-        uses: actions/github-script@v7
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: '🤖 CodeLens AI 扫描完成！请查看审查结果。'
-            })
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run backend tests
+        working-directory: backend
+        run: |
+          python -m pytest tests/ -v --tb=short
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
